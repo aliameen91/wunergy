@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.5'
+          coverage: none
+
+      - name: PHP syntax check
+        run: |
+          set -euo pipefail
+          find . -name '*.php' -not -path './vendor/*' -print0 \
+            | xargs -0 -P4 -n1 php -l
+
+  deploy:
+    needs: lint
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "${{ secrets.EC2_HOST_KEY }}" > ~/.ssh/known_hosts
+
+      - name: Back up current release
+        run: |
+          TS=$(date +%Y%m%dT%H%M%S)
+          ssh -i ~/.ssh/deploy_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
+            "cp -a ${{ secrets.EC2_PATH }}/index.php /var/backups/heatcalc/index.php.$TS && \
+             ln -sfn /var/backups/heatcalc/index.php.$TS /var/backups/heatcalc/last-good"
+
+      - name: Rsync to EC2
+        run: |
+          rsync -az --delay-updates --exclude-from=.rsyncignore \
+            -e "ssh -i ~/.ssh/deploy_key" \
+            ./ ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:${{ secrets.EC2_PATH }}/
+
+      - name: Health check
+        run: |
+          curl -fsS --retry 5 --retry-delay 3 --retry-all-errors \
+            "${{ secrets.HEALTHCHECK_URL }}" | grep -q 'Heat Loss Estimator'
+
+      - name: Roll back on failed health check
+        if: failure()
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
+            "cp -a /var/backups/heatcalc/last-good ${{ secrets.EC2_PATH }}/index.php"

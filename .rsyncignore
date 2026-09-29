@@ -1,0 +1,14 @@
+.git/
+.github/
+.ai/
+.idea/
+tests/
+vendor/
+composer.json
+composer.lock
+.rsyncignore
+.gitignore
+README.md
+CODE_REVIEW.md
+heat-loss-calculator.html
+wunergy-epc-lookup.php
